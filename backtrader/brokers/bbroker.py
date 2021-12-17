@@ -262,6 +262,7 @@ class BackBroker(bt.BrokerBase):
 
         self.orders = list()  # will only be appending
         self.pending = collections.deque()  # popleft and append(right)
+        self.to_cancel = dict()
         self._toactivate = collections.deque()  # to activate in next cycle
 
         self.positions = collections.defaultdict(Position)
@@ -392,15 +393,21 @@ class BackBroker(bt.BrokerBase):
         try:
             self.pending.remove(order)
         except ValueError:
+            self.to_cancel[order.ref] = order
             # If the list didn't have the element we didn't cancel anything
             return False
 
+        self._real_cancel(order, bracket)
+        return True
+
+    def _real_cancel(self, order, bracket=False):
         order.cancel()
         self.notify(order)
         self._ococheck(order)
         if not bracket:
             self._bracketize(order, cancel=True)
-        return True
+
+        self.to_cancel.pop(order.ref, None)
 
     def get_value(self, datas=None, mkt=False, lever=False):
         '''Returns the portfolio value of the given datas (if datas is ``None``, then
@@ -1211,13 +1218,16 @@ class BackBroker(bt.BrokerBase):
                 self.pending.append(order)  # cannot yet be processed
 
             else:
-                self._try_exec(order)
-                if order.alive():
-                    self.pending.append(order)
+                if order.ref in self.to_cancel:
+                    self._real_cancel(order)
+                else:
+                    self._try_exec(order)
+                    if order.alive():
+                        self.pending.append(order)
 
-                elif order.status == Order.Completed:
-                    # a bracket parent order may have been executed
-                    self._bracketize(order)
+                    elif order.status == Order.Completed:
+                        # a bracket parent order may have been executed
+                        self._bracketize(order)
 
         # Operations have been executed ... adjust cash end of bar
         for data, pos in self.positions.items():
